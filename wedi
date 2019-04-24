@@ -1,0 +1,261 @@
+#!/bin/sh
+POSIXLY_CORRECT=yes
+
+# Open the correct editor according to set variables. Function arguments:
+# $1 - $EDITOR variable
+# $2 - $VISUAL variable
+# If neither is set, the default editor vi will be run.
+# $3 - Name of file to be opened in the select editor
+open_editor(){
+if [ -e "$1" ];
+then 
+	if [ "$EDITOR" ];
+	then
+		if [ "$(command -v "$EDITOR")" ];
+		then
+			"$EDITOR" "$1"
+			if [ "$?" -ne 0 ]; then
+				echo "Editor $EDITOR returned error $?"
+			fi
+		else
+			echo "Editor in \$EDITOR variable is not a valid editor." >&2
+			exit 1 
+		fi
+
+	elif [ "$VISUAL" ];
+	then
+		if [ "$(command -v "$VISUAL")" ];
+		then
+			"$VISUAL" "$1"
+			if [ "$?" -ne 0 ]; then
+				echo "Editor $VISUAL returned error $?"
+			fi
+
+		else
+			echo "Editor in \$VISUAL variable is not a valid editor." >&2
+			exit 1
+		fi
+
+	else
+		if [ "$(command -v vi)" ];
+		then
+			vi "$1"
+			if [ "$?" -ne 0 ]; then
+				echo "Editor vi returned error $?"
+			fi
+
+		else
+			echo "Vi not found." >&2
+			exit 1
+		fi
+	fi
+
+else
+	echo "The file '$1' does not exist." >&2
+	exit 1
+fi
+}
+
+check_date(){
+if [ "$(uname)" = "FreeBSD" ]; 
+then
+	gdate "+%Y-%m-%d" -d "$1" > /dev/null 2>&1 	
+else
+	date "+%Y-%m-%d" -d "$1" > /dev/null 2>&1
+fi
+
+if [ "$?" -ne 0 ];
+then
+	echo "Invalid date set." >&2
+	exit 1
+fi 
+}
+
+# Selects the appropriate file or files from a folder based on set criteria.
+# "-a DATE" Selects all files in set directory edited with wedi after the specified date.
+# "-b DATE" Selects all files in set directory edited with wedi before the specified date.
+# "-m"      Selects the most edited file in set directory with wedi.
+# "-l"      Selects all edited files in set directory with wedi.
+# "last"    Selects the last edited file in set directory with wedi.
+select_file(){ 
+case "$1" in
+"-a")
+	check_date "$2"
+
+	setpath=$(realpath "$3")
+	setdate=$(echo "$2" | sed "s/-//g")
+	first=$(grep "$setpath/[^/]*$" "$WEDI_RC" | sort -k2 -k3 | awk '{print $2}' | sed "s/-//g" | awk -v setdate="$setdate" '{if ($1 >= setdate) {print NR; exit} }' )
+	
+	if [ -z "$first" ];
+	then
+		echo "No file edited after the specified date found in set directory." >&2
+	else
+		first=$(( first - 1))
+		ed_after=$(grep "$setpath/[^/]*$" "$WEDI_RC" | sort -k2 -k3 | awk -v first="$first" '{if (NR > first) {print $1} }' | sort | uniq )
+		echo "$ed_after"
+	fi
+	;;
+
+"-b")
+	check_date "$2"
+
+	setpath=$(realpath "$3")
+	setdate=$(echo "$2" | sed "s/-//g")
+	first=$(grep "$setpath/[^/]*$" "$WEDI_RC" | sort -r -k2 -k3 | awk '{print $2}' | sed "s/-//g" | awk -v setdate="$setdate" '{if ($1 < setdate) {print NR; exit} }' )
+
+	if [ -z "$first" ];
+	then
+		echo "No file edited before the specified date found in set directory." >&2
+	else
+		first=$(( first - 1))
+		ed_before=$(grep "$setpath/[^/]*$" "$WEDI_RC" | sort -r -k2 -k3 | awk -v first="$first" '{if (NR > first) {print $1} }' | sort | uniq )
+		echo "$ed_before"
+	fi
+	;;
+
+"-m")
+	# if multiple files are edited the most, choose the last one by name
+	setpath=$(realpath "$2")
+	most_ed=$(grep "$setpath/[^/]*$" "$WEDI_RC" | cut -d" " -f1 | sort | uniq -c | sort -nr | awk '{print $2}' | head -1 )
+	echo "$most_ed"
+	;;
+
+"-l")
+	setpath=$(realpath "$2")
+	all_ed=$(grep "$setpath/[^/]*$" "$WEDI_RC" | cut -d" " -f1 | sort | uniq )
+	echo "$all_ed"
+	;;
+
+"last")
+	setpath=$(realpath "$2")
+	last_ed=$(grep "$setpath/[^/]*$" "$WEDI_RC" | tail -1 | cut -d" " -f1 )
+	echo "$last_ed"
+	;;
+
+"*")
+	echo "Invalid program option set." >&2
+	exit 1
+	;;
+esac
+}
+
+# Saves information about the current file editation into the file specified by $WEDI_RC 
+save_edit_info(){
+	if [ "$(uname)" = "Linux" ] 
+        then	
+		now=$(date +'%Y-%m-%d %H:%M:%S')
+        else
+        	now=$(gdate +'%Y-%m-%d %H:%M:%S')
+	fi
+
+	path=$(realpath "$1" )
+	echo "$path $now" >> "$WEDI_RC"
+}
+
+# Checks if the command realpath is available, if not, the script ends. 
+if [ -z "$(command -v realpath)" ];
+then
+	echo "Command \'realpath\' not available." >&2
+	exit 1
+fi
+
+# Checks if the $WEDI_RC variable is set, if not, the script ends.
+if [ -z "$WEDI_RC" ];
+then
+	echo "WEDI_RC variable not set." >&2
+	exit 1
+fi
+
+# Checks if the wedirc file set in WEDI_RC variable exists, if not, creates it and its path.
+if [ ! -f "$WEDI_RC" ];
+then
+	echo "The wedirc file was not found. Creating it now."
+	mkdir -p "$(dirname "$WEDI_RC")"
+	touch "$WEDI_RC"
+fi
+
+# Checks if wedirc file is empty, if yes and the script is asked to select a file, exit.
+if [ "$#" -ne 1 -o ! -f "$1" ];
+then
+	if [ ! -s "$WEDI_RC" ];
+	then
+		echo "The wedirc file is empty, therefore there are no files to choose from." >&2
+		exit 1
+	fi
+fi
+
+# Chooses the desirable outcome based on input arguments.
+case "$#" in
+"0")
+	selfile=$(select_file "last" "./")	
+	open_editor "$selfile"
+	save_edit_info "$selfile"
+	;;	
+	
+"1")
+	if [ "$1" = "-m" ];
+	then
+		# Since no path is set, open the most edited file in the current folder.
+		selfile=$(select_file "$1" "./")
+		open_editor "$selfile"
+		save_edit_info "$selfile"
+	
+	elif [ "$1" = "-l" ];
+	then
+		# Since no path is set, list all edited files in the current folder.
+		select_file "$1" "./"
+
+	elif [ -d "$1" ];
+	then
+		# Folder specified, look for the last opened file there.
+		selfile=$(select_file "last" "$1")
+		if [ -z "$selfile" ];
+		then
+			echo "No previously edited file found in '$1'." >&2
+			exit 1
+		fi
+		open_editor "$selfile"
+		save_edit_info "$selfile"
+
+	else	
+		open_editor "$1"
+		save_edit_info "$1"
+
+	fi
+	;;
+
+"2")
+	if [ "$1" = "-a" -o "$1" = "-b" ];
+	then
+		select_file "$1" "$2" "./"
+
+	elif [ "$1" = "-m" -a -d "$2" ];
+	then
+		selfile=$(select_file "$1" "$2")
+		open_editor "$selfile"
+		save_edit_info "$selfile"
+
+	elif [ "$1" = "-l" -a -d "$2" ];
+	then
+		select_file "$1" "$2"
+
+	else
+		echo "Invalid program argument(s)." >&2
+	fi
+	;;
+
+"3")
+	if [ "$1" = "-a" -o "$1" = "-b" -a "$2" -a -d "$3" ];
+	then
+		select_file "$1" "$2" "$3"
+	elif [ ! -d "$3" ];
+	then
+		echo "Specified path is not a directory." >&2
+	fi
+	;;
+
+*)
+	echo "Too many arguments set." >&2
+	exit 1
+	;;
+esac
